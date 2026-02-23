@@ -98,7 +98,9 @@ public class OutboxDispatcher(
         return type switch
         {
             nameof(OrderCreated) => bus.Publish(
-                JsonSerializer.Deserialize<OrderCreated>(payload)!, ct),
+                JsonSerializer.Deserialize<OrderCreated>(payload)
+                    ?? throw new InvalidOperationException($"Failed to deserialize payload for message type: {type}"),
+                ct),
             _ => throw new InvalidOperationException($"Unknown message type: {type}")
         };
     }
