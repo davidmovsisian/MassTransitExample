@@ -71,3 +71,63 @@ services:
         condition: service_healthy
       postgres-b:
         condition: service_healthy
+
+  postgres-a-rmq:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: serviceA
+      POSTGRES_PASSWORD: serviceA
+      POSTGRES_DB: serviceA
+    ports:
+      - "5435:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "serviceA"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-b-rmq:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: serviceB
+      POSTGRES_PASSWORD: serviceB
+      POSTGRES_DB: serviceB
+    ports:
+      - "5436:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "serviceB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  service-a-rmq:
+    build:
+      context: .
+      dockerfile: ServiceA_RMQ/Dockerfile
+    environment:
+      - ConnectionStrings__ServiceA=Host=postgres-a-rmq;Port=5432;Database=serviceA;Username=serviceA;Password=serviceA
+      - RabbitMq__Host=rabbitmq
+      - ASPNETCORE_HTTP_PORTS=8080
+    ports:
+      - "5003:8080"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres-a-rmq:
+        condition: service_healthy
+
+  service-b-rmq:
+    build:
+      context: .
+      dockerfile: ServiceB_RMQ/Dockerfile
+    environment:
+      - ConnectionStrings__ServiceB=Host=postgres-b-rmq;Port=5432;Database=serviceB;Username=serviceB;Password=serviceB
+      - RabbitMq__Host=rabbitmq
+      - ASPNETCORE_HTTP_PORTS=8080
+    ports:
+      - "5004:8080"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres-b-rmq:
+        condition: service_healthy
