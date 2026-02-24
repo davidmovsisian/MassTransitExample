@@ -1,12 +1,18 @@
 # MassTransit — Transactional Outbox Sample
 
-This sample demonstrates the **Transactional Outbox** pattern using:
+This sample demonstrates the **Transactional Outbox** pattern in two flavours:
+
+| Projects | Transport |
+|---|---|
+| ServiceA / ServiceB | MassTransit abstraction over RabbitMQ |
+| ServiceA_RMQ / ServiceB_RMQ | Direct RabbitMQ.Client (no MassTransit) |
 
 | Tech | Role |
 |---|---|
-| [MassTransit](https://masstransit.io/) | Message-bus abstraction |
+| [MassTransit](https://masstransit.io/) | Message-bus abstraction (ServiceA/B only) |
+| [RabbitMQ.Client](https://www.nuget.org/packages/RabbitMQ.Client) | Direct broker access (ServiceA_RMQ/B_RMQ) |
 | RabbitMQ | Message broker |
-| ASP.NET Core 8 | HTTP host for both services |
+| ASP.NET Core 8 | HTTP host for all services |
 | PostgreSQL | Relational database (one per service) |
 | [Dapper](https://github.com/DapperLib/Dapper) | Lightweight ORM for all DB access |
 
@@ -57,24 +63,41 @@ cd MassTransitExample
 docker compose up --build
 ```
 
-All five containers start:
+All five containers start (MassTransit variant):
 
 | Container | Port | Description |
 |---|---|---|
 | `rabbitmq` | 5672 / 15672 | Broker + management UI |
 | `postgres-a` | 5433 | ServiceA database |
 | `postgres-b` | 5434 | ServiceB database |
-| `service-a` | 5001 | Producer + Outbox dispatcher |
-| `service-b` | 5002 | Consumer |
+| `service-a` | 5001 | Producer + Outbox dispatcher (MassTransit) |
+| `service-b` | 5002 | Consumer (MassTransit) |
+
+Plus four more for the direct-RabbitMQ variant:
+
+| Container | Port | Description |
+|---|---|---|
+| `postgres-a-rmq` | 5435 | ServiceA_RMQ database |
+| `postgres-b-rmq` | 5436 | ServiceB_RMQ database |
+| `service-a-rmq` | 5003 | Producer + Outbox dispatcher (RabbitMQ.Client) |
+| `service-b-rmq` | 5004 | Consumer (RabbitMQ.Client) |
 
 ---
 
-## Triggering the flow
+## Triggering the flow (MassTransit variant)
 
 ```bash
 curl -s -X POST http://localhost:5001/orders \
      -H "Content-Type: application/json" \
      -d '{"customerName":"Alice","amount":99.99}' | jq
+```
+
+## Triggering the flow (direct RabbitMQ variant)
+
+```bash
+curl -s -X POST http://localhost:5003/orders \
+     -H "Content-Type: application/json" \
+     -d '{"customerName":"Bob","amount":49.99}' | jq
 ```
 
 Expected response:
@@ -87,12 +110,20 @@ Expected response:
 }
 ```
 
-Watch the logs:
+Watch the logs (MassTransit variant):
 
 ```
 service-a  | Order <id> created and outbox message <id> inserted in the same transaction.
 service-a  | Outbox message <id> (OrderCreated) published successfully.
 service-b  | ServiceB consumed OrderCreated for OrderId=<id>, Customer=Alice, Amount=99.99. Saved as ReceivedOrder <id>.
+```
+
+Watch the logs (direct RabbitMQ variant):
+
+```
+service-a-rmq  | Order <id> created and outbox message <id> inserted in the same transaction.
+service-a-rmq  | Outbox message <id> (OrderCreated) published successfully.
+service-b-rmq  | ServiceB_RMQ consumed OrderCreated for OrderId=<id>, Customer=Bob, Amount=49.99. Saved as ReceivedOrder <id>.
 ```
 
 ---
@@ -164,18 +195,43 @@ public async Task Consume(ConsumeContext<OrderCreated> context)
 ```
 MassTransitExample/
 ├── docker-compose.yml
-├── ServiceA/
-│   ├── Contracts/OrderCreated.cs      # Shared message contract
-│   ├── Models/                        # Order, OutboxMessage
-│   ├── Data/                          # DbConnectionFactory, DatabaseInitializer
-│   ├── Services/OutboxDispatcher.cs   # Background polling + publish
-│   ├── Program.cs                     # POST /orders endpoint + DI wiring
+├── ServiceA/                              # MassTransit variant (producer)
+│   ├── Contracts/OrderCreated.cs
+│   ├── Models/
+│   ├── Data/
+│   ├── Services/OutboxDispatcher.cs
+│   ├── Program.cs
 │   └── Dockerfile
-└── ServiceB/
-    ├── Contracts/OrderCreated.cs      # Same contract (same namespace)
+├── ServiceB/                              # MassTransit variant (consumer)
+│   ├── Contracts/OrderCreated.cs
+│   ├── Models/ReceivedOrder.cs
+│   ├── Data/
+│   ├── Consumers/OrderCreatedConsumer.cs
+│   ├── Program.cs
+│   └── Dockerfile
+├── ServiceA_RMQ/                          # Direct RabbitMQ variant (producer)
+│   ├── Contracts/OrderCreated.cs
+│   ├── Models/
+│   ├── Data/
+│   ├── Services/RabbitMqPublisher.cs      # Connection/channel lifecycle + BasicPublish
+│   ├── Services/OutboxDispatcher.cs       # Same outbox polling logic, no MassTransit
+│   ├── Program.cs
+│   └── Dockerfile
+└── ServiceB_RMQ/                          # Direct RabbitMQ variant (consumer)
+    ├── Contracts/OrderCreated.cs
     ├── Models/ReceivedOrder.cs
-    ├── Data/                          # DbConnectionFactory, DatabaseInitializer
-    ├── Consumers/OrderCreatedConsumer.cs
+    ├── Data/
+    ├── Consumers/OrderCreatedConsumerService.cs  # Background hosted service consumer
     ├── Program.cs
     └── Dockerfile
 ```
+
+### RabbitMQ topology (ServiceA_RMQ / ServiceB_RMQ)
+
+| Resource | Name | Type |
+|---|---|---|
+| Exchange | `order.created` | fanout, durable |
+| Queue | `order.created.queue` | durable |
+
+ServiceA_RMQ publishes JSON-encoded `OrderCreated` messages to the `order.created` fanout exchange.  
+ServiceB_RMQ declares and binds `order.created.queue` to that exchange and consumes with `basicQos=1`.
